@@ -4,7 +4,17 @@ This guide provides developers with the knowledge needed to write, structure, an
 
 ## 🚀 Getting Started
 
-### 1. The Compilation Process
+### 0. Compiling compiler from source-code
+
+You'll need GCC compiler for this (at least, I've only used that one, as I am a bit used to it)
+
+**Use this command to actually compile the compiler**
+```bash
+# Never ignore the warnings! Especially with C!
+gcc ./mylang.c -o mylang.exe -std=c11 -Wall -Wextra
+```
+
+### 1. The *.mlg* Compilation Process
 
 Mylang applications are compiled into standard executables using the `mylang` compiler.
 
