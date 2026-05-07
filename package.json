@@ -1,0 +1,66 @@
+{
+  "name": "mlgextension",
+  "displayName": "MyLang Extension",
+  "version": "1.0.0",
+  "description": "A VS Code extension for the MyLang language, adding support for .mlg files.",
+  "main": "./index.js",
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "echo 'No compilation step needed for this example'",
+    "pretest": "npm run compile",
+    "test": "echo 'No tests defined'"
+  },
+  "keywords": [
+    "mylang",
+    "extension"
+  ],
+  "author": "",
+  "license": "ISC",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "activationEvents": [
+    "onLanguage:mylang",
+    "onCommand:vscode-mylang-extension.helloWorld",
+    "onCommand:vscode-mylang-extension.compile"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "mylang",
+        "aliases": [
+          "MyLang",
+          "mylang"
+        ],
+        "extensions": [
+          ".mlg"
+        ]
+      }
+    ],
+    "grammars": [
+      {
+        "language": "mylang",
+        "scopeName": "source.mylang",
+        "path": "./language-defs/mylang.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "vscode-mylang-extension.helloWorld",
+        "title": "MyLang: Say Hello"
+      },
+      {
+        "command": "vscode-mylang-extension.compile",
+        "title": "Compile MyLang File"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "vscode-mylang-extension.compile",
+          "when": "resourceExtname == .mlg"
+        }
+      ]
+    }
+  }
+}
