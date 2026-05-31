@@ -279,6 +279,22 @@ static char* transform_ref_expr(Codegen* cg, const char* expr) {
 
 static char* transform_expr(Codegen* cg, const char* expr);
 
+static const char* format_for_type(const char* type) {
+    if (!type) return "%s";
+    if (strcmp(type, "int") == 0 || strcmp(type, "bool") == 0) return "%d";
+    if (strcmp(type, "float") == 0 || strcmp(type, "double") == 0) return "%f";
+    return "%s";
+}
+
+static const char* function_call_fmt_for(Codegen* cg, const char* raw) {
+    char* open = strchr(raw, '(');
+    if (!open) return NULL;
+    char* name = trim_copy(raw, (int)(open - raw));
+    FunctionInfo* fn = symbols_find_function(cg->symbols, name);
+    free(name);
+    return fn ? format_for_type(fn->return_type) : NULL;
+}
+
 static const char* interpolation_fmt_for(Codegen* cg, const char* raw) {
     char* method = transform_methods(cg, raw);
     const Symbol* s = symbols_find(cg->symbols, raw);
@@ -287,8 +303,11 @@ static const char* interpolation_fmt_for(Codegen* cg, const char* raw) {
     else if (strstr(method, "string_has(")) fmt = "%d";
     else if (strstr(raw, ".get_int(")) fmt = "%d";
     else if (strstr(raw, ".get_float(") || strstr(raw, ".get_double(")) fmt = "%f";
-    else if (s && strcmp(s->type, "int") == 0) fmt = "%d";
-    else if (s && (strcmp(s->type, "float") == 0 || strcmp(s->type, "double") == 0)) fmt = "%f";
+    else if (s) fmt = format_for_type(s->type);
+    else {
+        const char* call_fmt = function_call_fmt_for(cg, raw);
+        if (call_fmt) fmt = call_fmt;
+    }
     free(method);
     return fmt;
 }
@@ -373,6 +392,38 @@ static char* transform_call_refs(Codegen* cg, const char* expr) {
     return out;
 }
 
+static char* transform_async_await(Codegen* cg, const char* expr) {
+    (void)cg;
+    StrBuf sb;
+    sb_init(&sb);
+    int len = (int)strlen(expr);
+    for (int i = 0; i < len; ) {
+        if (inside_string_at(expr, i)) {
+            sb_append_char(&sb, expr[i++]);
+            continue;
+        }
+        if (strncmp(expr + i, "await ", 6) == 0 && (i == 0 || !is_ident_char(expr[i - 1]))) {
+            sb_append(&sb, "mlg_await(");
+            i += 6;
+            while (i < len && isspace((unsigned char)expr[i])) i++;
+            int start = i;
+            while (i < len && is_ident_char(expr[i])) i++;
+            sb_appendf(&sb, "%.*s", i - start, expr + start);
+            sb_append(&sb, ")");
+            continue;
+        }
+        if (strncmp(expr + i, "async ", 6) == 0 && (i == 0 || !is_ident_char(expr[i - 1]))) {
+            sb_append(&sb, "mlg_async_");
+            i += 6;
+            continue;
+        }
+        sb_append_char(&sb, expr[i++]);
+    }
+    char* out = mlg_strdup(sb.data);
+    sb_free(&sb);
+    return out;
+}
+
 static char* transform_expr(Codegen* cg, const char* expr) {
     char* s1 = transform_input_empty(expr);
     char* s2 = transform_file_constructor(s1);
@@ -381,22 +432,23 @@ static char* transform_expr(Codegen* cg, const char* expr) {
     char* s5 = transform_string_comparison(cg, s4);
     char* s6 = transform_call_refs(cg, s5);
     char* s7 = transform_ref_expr(cg, s6);
+    char* s8 = transform_async_await(cg, s7);
     free(s1);
     free(s2);
     free(s3);
     free(s4);
     free(s5);
     free(s6);
-    return s7;
+    free(s7);
+    return s8;
 }
 
 static const char* printf_fmt_for(Codegen* cg, const char* expr) {
     const Symbol* s = symbols_find(cg->symbols, expr);
-    if (s && strcmp(s->type, "int") == 0) return "%d";
     if (strstr(expr, "strlen(") || strstr(expr, ".len")) return "%lu";
-    if (s && (strcmp(s->type, "float") == 0 || strcmp(s->type, "double") == 0)) return "%f";
-    if (s && strcmp(s->type, "json") == 0) return "%s";
-    if (s && strcmp(s->type, "file") == 0) return "%s";
+    if (s) return format_for_type(s->type);
+    const char* call_fmt = function_call_fmt_for(cg, expr);
+    if (call_fmt) return call_fmt;
     return "%s";
 }
 
@@ -498,7 +550,7 @@ static void emit_expr_statement(Codegen* cg, const char* expr) {
 static void emit_print(Codegen* cg, const char* expr) {
     const char* inner = expr + 6;
     int len = (int)strlen(inner);
-    while (len > 0 && inner[len - 1] == ')') len--;
+    if (len > 0 && inner[len - 1] == ')') len--;
     char raw[2048] = {0};
     snprintf(raw, sizeof(raw), "%.*s", len, inner);
     char* transformed = transform_expr(cg, raw);
@@ -523,6 +575,77 @@ static void emit_node(Codegen* cg, AstNode* n) {
     if (!n) return;
     switch (n->kind) {
         case NODE_FUNC: {
+            if (1) {
+                // Forward declaration of actual function
+                emit_indent(cg);
+                sb_appendf(&cg->out, "%s %s(", c_type_name(n->func.return_type), n->func.name);
+                for (int i = 0; i < n->func.param_count; i++) {
+                    if (i) sb_append(&cg->out, ", ");
+                    sb_appendf(&cg->out, "%s %s", c_type_name(n->func.params[i].type), n->func.params[i].name);
+                }
+                sb_append(&cg->out, ");\n\n");
+
+                // Struct for arguments
+                emit_indent(cg);
+                sb_appendf(&cg->out, "typedef struct {\n");
+                for (int i = 0; i < n->func.param_count; i++) {
+                    sb_appendf(&cg->out, "    %s %s;\n", c_type_name(n->func.params[i].type), n->func.params[i].name);
+                }
+                sb_appendf(&cg->out, "    task task_obj;\n");
+                sb_appendf(&cg->out, "} mlg_args_%s;\n\n", n->func.name);
+
+                // Thread wrapper function
+                emit_indent(cg);
+                sb_appendf(&cg->out, "void* mlg_thread_%s(void* raw_arg) {\n", n->func.name);
+                sb_appendf(&cg->out, "    mlg_args_%s* args = (mlg_args_%s*)raw_arg;\n", n->func.name, n->func.name);
+                if (strcmp(n->func.return_type, "void") == 0) {
+                    sb_appendf(&cg->out, "    %s(", n->func.name);
+                    for (int i = 0; i < n->func.param_count; i++) {
+                        if (i) sb_append(&cg->out, ", ");
+                        sb_appendf(&cg->out, "args->%s", n->func.params[i].name);
+                    }
+                    sb_appendf(&cg->out, ");\n");
+                    sb_appendf(&cg->out, "    args->task_obj->result = NULL;\n");
+                } else {
+                    sb_appendf(&cg->out, "    %s res = %s(", c_type_name(n->func.return_type), n->func.name);
+                    for (int i = 0; i < n->func.param_count; i++) {
+                        if (i) sb_append(&cg->out, ", ");
+                        sb_appendf(&cg->out, "args->%s", n->func.params[i].name);
+                    }
+                    sb_appendf(&cg->out, ");\n");
+                    if (strcmp(n->func.return_type, "int") == 0 || strcmp(n->func.return_type, "bool") == 0) {
+                        sb_appendf(&cg->out, "    args->task_obj->result = (void*)(intptr_t)res;\n");
+                    } else if (strcmp(n->func.return_type, "float") == 0 || strcmp(n->func.return_type, "double") == 0) {
+                        sb_appendf(&cg->out, "    double* d = malloc(sizeof(double)); *d = res;\n");
+                        sb_appendf(&cg->out, "    args->task_obj->result = (void*)d;\n");
+                    } else {
+                        sb_appendf(&cg->out, "    args->task_obj->result = (void*)res;\n");
+                    }
+                }
+                sb_appendf(&cg->out, "    args->task_obj->completed = true;\n");
+                sb_appendf(&cg->out, "    free(args);\n");
+                sb_appendf(&cg->out, "    return NULL;\n");
+                sb_appendf(&cg->out, "}\n\n");
+
+                // Starter function helper
+                emit_indent(cg);
+                sb_appendf(&cg->out, "task mlg_async_%s(", n->func.name);
+                for (int i = 0; i < n->func.param_count; i++) {
+                    if (i) sb_append(&cg->out, ", ");
+                    sb_appendf(&cg->out, "%s %s", c_type_name(n->func.params[i].type), n->func.params[i].name);
+                }
+                sb_appendf(&cg->out, ") {\n");
+                sb_appendf(&cg->out, "    task t = mlg_task_create();\n");
+                sb_appendf(&cg->out, "    mlg_args_%s* args = malloc(sizeof(mlg_args_%s));\n", n->func.name, n->func.name);
+                for (int i = 0; i < n->func.param_count; i++) {
+                    sb_appendf(&cg->out, "    args->%s = %s;\n", n->func.params[i].name, n->func.params[i].name);
+                }
+                sb_appendf(&cg->out, "    args->task_obj = t;\n");
+                sb_appendf(&cg->out, "    mlg_thread_start(t, mlg_thread_%s, args);\n", n->func.name);
+                sb_appendf(&cg->out, "    return t;\n");
+                sb_appendf(&cg->out, "}\n\n");
+            }
+
             emit_indent(cg);
             sb_appendf(&cg->out, "%s %s(", c_type_name(n->func.return_type), n->func.name);
             for (int i = 0; i < n->func.param_count; i++) {
@@ -542,7 +665,19 @@ static void emit_node(Codegen* cg, AstNode* n) {
             char* expr = transform_expr(cg, n->var.expr);
             emit_indent(cg);
             sb_appendf(&cg->out, "%s %s", c_type_name(n->var.type), n->var.name);
-            if (expr[0]) sb_appendf(&cg->out, " = %s", expr);
+            if (expr[0]) {
+                if (strstr(expr, "mlg_await(") && (strcmp(n->var.type, "int") == 0 || strcmp(n->var.type, "bool") == 0)) {
+                    char* casted = replace_word_outside_strings(expr, "mlg_await", "(int)(intptr_t)mlg_await");
+                    sb_appendf(&cg->out, " = %s", casted);
+                    free(casted);
+                } else if (strstr(expr, "mlg_await(") && (strcmp(n->var.type, "float") == 0 || strcmp(n->var.type, "double") == 0)) {
+                    char* casted = replace_word_outside_strings(expr, "mlg_await", "*(double*)mlg_await");
+                    sb_appendf(&cg->out, " = %s", casted);
+                    free(casted);
+                } else {
+                    sb_appendf(&cg->out, " = %s", expr);
+                }
+            }
             sb_append(&cg->out, ";\n");
             free(expr);
             break;
@@ -604,10 +739,23 @@ static void emit_node(Codegen* cg, AstNode* n) {
 
 static void emit_runtime(StrBuf* out) {
     sb_append(out,
-        "#include <stdio.h>\n#include <stdlib.h>\n#include <stdbool.h>\n#include <stdarg.h>\n"
-        "#include <float.h>\n#include <string.h>\n#include <locale.h>\n\ntypedef char* string;\n"
+        "#include <stdio.h>\n#include <stdlib.h>\n#include <stdbool.h>\n#include <stdarg.h>\n#include <stdint.h>\n"
+        "#include <float.h>\n#include <string.h>\n#include <locale.h>\n"
+        "#if defined(_WIN32)||defined(_WIN64)\n#ifndef _WIN32_WINNT\n#define _WIN32_WINNT 0x0600\n#endif\n#include <winsock2.h>\n#include <ws2tcpip.h>\n#include <windows.h>\n"
+        "#else\n#include <sys/types.h>\n#include <sys/socket.h>\n#include <netdb.h>\n#include <netinet/in.h>\n#include <unistd.h>\n#include <errno.h>\n#include <pthread.h>\n#endif\n"
+        "\ntypedef char* string;\n"
         "typedef struct MlgJson{string text;} MlgJson; typedef MlgJson* json;\n"
         "typedef struct MlgFile{string path;string mode;string* lines;int line_count;int line_cap;} MlgFile; typedef MlgFile* file;\n\n"
+        "typedef struct MlgTask {\n"
+        "    #if defined(_WIN32)||defined(_WIN64)\n"
+        "    HANDLE thread;\n"
+        "    #else\n"
+        "    pthread_t thread;\n"
+        "    #endif\n"
+        "    void* result;\n"
+        "    volatile bool completed;\n"
+        "} MlgTask;\n"
+        "typedef MlgTask* task;\n\n"
         "#define COUNT_ARGS(...) COUNT_ARGS_IMPL(__VA_ARGS__, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1)\n"
         "#define COUNT_ARGS_IMPL(_1,_2,_3,_4,_5,_6,_7,_8,_9,_10,N,...) N\n"
         "#define m_max(...) m_max_impl(COUNT_ARGS(__VA_ARGS__), __VA_ARGS__)\n"
@@ -643,6 +791,16 @@ static void emit_runtime(StrBuf* out) {
         "void file_append(file f,string value){if(!f)return;file_reserve(f,f->line_count+1);f->lines[f->line_count++]=string_dup(value);}\n"
         "void file_save(file f){if(!f)return;FILE* fp=fopen(f->path,\"wb\");if(!fp)return;for(int i=0;i<f->line_count;i++){fputs(f->lines[i],fp);fputc('\\n',fp);}fclose(fp);}\n"
         "void file_delete(file f,bool permanent){if(!f)return;if(permanent){remove(f->path);return;}for(int i=0;i<f->line_count;i++)free(f->lines[i]);f->line_count=0;file_save(f);}\n"
+        "static void net_init(){static int done=0;if(done)return;done=1;\n#if defined(_WIN32)||defined(_WIN64)\nWSADATA w;WSAStartup(MAKEWORD(2,2),&w);\n#endif\n}\n"
+        "static void net_close_socket(int s){\n#if defined(_WIN32)||defined(_WIN64)\nclosesocket(s);\n#else\nclose(s);\n#endif\n}\n"
+        "static unsigned long mlg_hash_core(const char* s){unsigned long h=1469598103u;while(s&&*s){h^=(unsigned char)*s++;h*=16777619u;}return h;}\n"
+        "string password_hash(string password){char* out=malloc(64);unsigned long h=mlg_hash_core(password);snprintf(out,64,\"mlg$fnv1a$%08lx\",h);return out;}\n"
+        "bool password_verify(string password,string hash){string h=password_hash(password);bool ok=hash&&strcmp(h,hash)==0;free(h);return ok;}\n"
+        "string http_get(string host,string path,int port){net_init();struct hostent* he=gethostbyname(host);if(!he)return string_dup(\"\");int sock=(int)socket(AF_INET,SOCK_STREAM,0);if(sock<0)return string_dup(\"\");struct sockaddr_in addr;memset(&addr,0,sizeof(addr));addr.sin_family=AF_INET;addr.sin_port=htons((unsigned short)port);memcpy(&addr.sin_addr,he->h_addr_list[0],(size_t)he->h_length);if(connect(sock,(struct sockaddr*)&addr,sizeof(addr))!=0){net_close_socket(sock);return string_dup(\"\");}char req[1024];snprintf(req,sizeof(req),\"GET %s HTTP/1.0\\r\\nHost: %s\\r\\nConnection: close\\r\\n\\r\\n\",path?path:\"/\",host);send(sock,req,(int)strlen(req),0);char* out=malloc(65536);int used=0,n;while((n=(int)recv(sock,out+used,65535-used,0))>0){used+=n;if(used>=65535)break;}out[used]=0;net_close_socket(sock);return out;}\n"
+        "int http_server_once(int port,string response){net_init();int srv=(int)socket(AF_INET,SOCK_STREAM,0);if(srv<0)return 0;struct sockaddr_in addr;memset(&addr,0,sizeof(addr));addr.sin_family=AF_INET;addr.sin_addr.s_addr=0;addr.sin_port=htons((unsigned short)port);int yes=1;setsockopt(srv,SOL_SOCKET,SO_REUSEADDR,(char*)&yes,sizeof(yes));if(bind(srv,(struct sockaddr*)&addr,sizeof(addr))!=0){net_close_socket(srv);return 0;}listen(srv,1);int c=(int)accept(srv,NULL,NULL);if(c<0){net_close_socket(srv);return 0;}char buf[2048];recv(c,buf,sizeof(buf)-1,0);const char* body=response?response:\"\";char header[512];snprintf(header,sizeof(header),\"HTTP/1.1 200 OK\\r\\nContent-Type: text/plain; charset=utf-8\\r\\nContent-Length: %lu\\r\\nConnection: close\\r\\n\\r\\n\",(unsigned long)strlen(body));send(c,header,(int)strlen(header),0);send(c,body,(int)strlen(body),0);net_close_socket(c);net_close_socket(srv);return 1;}\n"
+        "int websocket_server_once(int port){net_init();int srv=(int)socket(AF_INET,SOCK_STREAM,0);if(srv<0)return -1;struct sockaddr_in addr;memset(&addr,0,sizeof(addr));addr.sin_family=AF_INET;addr.sin_addr.s_addr=0;addr.sin_port=htons((unsigned short)port);int yes=1;setsockopt(srv,SOL_SOCKET,SO_REUSEADDR,(char*)&yes,sizeof(yes));if(bind(srv,(struct sockaddr*)&addr,sizeof(addr))!=0){net_close_socket(srv);return -1;}listen(srv,1);int c=(int)accept(srv,NULL,NULL);net_close_socket(srv);return c;}\n"
+        "void websocket_send_text(int socket_id,string text){if(socket_id<0||!text)return;unsigned char header[10];size_t len=strlen(text);header[0]=0x81;if(len<126){header[1]=(unsigned char)len;send(socket_id,(char*)header,2,0);}else{header[1]=126;header[2]=(unsigned char)((len>>8)&255);header[3]=(unsigned char)(len&255);send(socket_id,(char*)header,4,0);}send(socket_id,text,(int)len,0);}\n"
+        "void websocket_close(int socket_id){if(socket_id>=0)net_close_socket(socket_id);}\n"
         "void mlg_init_console(){\n"
         "setlocale(LC_ALL,\".UTF8\");\n"
         "#if defined(_WIN32)||defined(_WIN64)\n"
@@ -660,6 +818,186 @@ static void emit_runtime(StrBuf* out) {
         "system(\"clear\");\n"
         "#endif\n"
         "}\n\n");
+    sb_append(out,
+        "task mlg_task_create() {\n"
+        "    task t = calloc(1, sizeof(MlgTask));\n"
+        "    return t;\n"
+        "}\n"
+        "void mlg_thread_start(task t, void* (*fn)(void*), void* arg) {\n"
+        "    #if defined(_WIN32)||defined(_WIN64)\n"
+        "    t->thread = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)fn, arg, 0, NULL);\n"
+        "    #else\n"
+        "    pthread_create(&t->thread, NULL, fn, arg);\n"
+        "    #endif\n"
+        "}\n"
+        "void* mlg_await(task t) {\n"
+        "    if (!t) return NULL;\n"
+        "    #if defined(_WIN32)||defined(_WIN64)\n"
+        "    WaitForSingleObject(t->thread, INFINITE);\n"
+        "    CloseHandle(t->thread);\n"
+        "    #else\n"
+        "    pthread_join(t->thread, NULL);\n"
+        "    #endif\n"
+        "    void* res = t->result;\n"
+        "    free(t);\n"
+        "    return res;\n"
+        "}\n\n");
+    sb_append(out,
+        "#define SHA1_ROT(x, y) ((x << y) | (x >> (32 - y)))\n"
+        "static void mlg_sha1(const unsigned char* msg, size_t len, unsigned char* digest) {\n"
+        "    uint32_t h0 = 0x67452301, h1 = 0xEFCDAB89, h2 = 0x98BADCFE, h3 = 0x10325476, h4 = 0xC3D2E1F0;\n"
+        "    size_t new_len = (((len + 8) / 64) + 1) * 64;\n"
+        "    unsigned char* pad = calloc(1, new_len);\n"
+        "    memcpy(pad, msg, len);\n"
+        "    pad[len] = 0x80;\n"
+        "    uint64_t bits = (uint64_t)len * 8;\n"
+        "    for (int i = 0; i < 8; i++) pad[new_len - 8 + i] = (unsigned char)(bits >> (56 - i * 8));\n"
+        "    for (size_t chunk = 0; chunk < new_len; chunk += 64) {\n"
+        "        uint32_t w[80];\n"
+        "        for (int i = 0; i < 16; i++) {\n"
+        "            w[i] = ((uint32_t)pad[chunk + i*4] << 24) | ((uint32_t)pad[chunk + i*4 + 1] << 16) |\n"
+        "                   ((uint32_t)pad[chunk + i*4 + 2] << 8) | pad[chunk + i*4 + 3];\n"
+        "        }\n"
+        "        for (int i = 16; i < 80; i++) w[i] = SHA1_ROT((w[i-3] ^ w[i-8] ^ w[i-14] ^ w[i-16]), 1);\n"
+        "        uint32_t a = h0, b = h1, c = h2, d = h3, e = h4;\n"
+        "        for (int i = 0; i < 80; i++) {\n"
+        "            uint32_t f, k;\n"
+        "            if (i < 20) { f = (b & c) | (~b & d); k = 0x5A827999; }\n"
+        "            else if (i < 40) { f = b ^ c ^ d; k = 0x6ED9EBA1; }\n"
+        "            else if (i < 60) { f = (b & c) | (b & d) | (c & d); k = 0x8F1BBCDC; }\n"
+        "            else { f = b ^ c ^ d; k = 0xCA62C1D6; }\n"
+        "            uint32_t temp = SHA1_ROT(a, 5) + f + e + k + w[i];\n"
+        "            e = d; d = c; c = SHA1_ROT(b, 30); b = a; a = temp;\n"
+        "        }\n"
+        "        h0 += a; h1 += b; h2 += c; h3 += d; h4 += e;\n"
+        "    }\n"
+        "    free(pad);\n"
+        "    digest[0] = (unsigned char)(h0 >> 24); digest[1] = (unsigned char)(h0 >> 16); digest[2] = (unsigned char)(h0 >> 8); digest[3] = (unsigned char)h0;\n"
+        "    digest[4] = (unsigned char)(h1 >> 24); digest[5] = (unsigned char)(h1 >> 16); digest[6] = (unsigned char)(h1 >> 8); digest[7] = (unsigned char)h1;\n"
+        "    digest[8] = (unsigned char)(h2 >> 24); digest[9] = (unsigned char)(h2 >> 16); digest[10] = (unsigned char)(h2 >> 8); digest[11] = (unsigned char)h2;\n"
+        "    digest[12] = (unsigned char)(h3 >> 24); digest[13] = (unsigned char)(h3 >> 16); digest[14] = (unsigned char)(h3 >> 8); digest[15] = (unsigned char)h3;\n"
+        "    digest[16] = (unsigned char)(h4 >> 24); digest[17] = (unsigned char)(h4 >> 16); digest[18] = (unsigned char)(h4 >> 8); digest[19] = (unsigned char)h4;\n"
+        "}\n"
+        "static const char mlg_b64chars[] = \"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/\";\n"
+        "static void mlg_base64_encode(const unsigned char* in, size_t in_len, char* out) {\n"
+        "    size_t i = 0, j = 0;\n"
+        "    uint32_t v;\n"
+        "    for (; i < in_len - (in_len % 3); i += 3) {\n"
+        "        v = ((uint32_t)in[i] << 16) | ((uint32_t)in[i+1] << 8) | in[i+2];\n"
+        "        out[j++] = mlg_b64chars[(v >> 18) & 0x3F];\n"
+        "        out[j++] = mlg_b64chars[(v >> 12) & 0x3F];\n"
+        "        out[j++] = mlg_b64chars[(v >> 6) & 0x3F];\n"
+        "        out[j++] = mlg_b64chars[v & 0x3F];\n"
+        "    }\n"
+        "    if (in_len % 3 == 1) {\n"
+        "        v = in[i];\n"
+        "        out[j++] = mlg_b64chars[(v >> 2) & 0x3F];\n"
+        "        out[j++] = mlg_b64chars[(v << 4) & 0x3F];\n"
+        "        out[j++] = '=';\n"
+        "        out[j++] = '=';\n"
+        "    } else if (in_len % 3 == 2) {\n"
+        "        v = ((uint32_t)in[i] << 8) | in[i+1];\n"
+        "        out[j++] = mlg_b64chars[(v >> 10) & 0x3F];\n"
+        "        out[j++] = mlg_b64chars[(v >> 4) & 0x3F];\n"
+        "        out[j++] = mlg_b64chars[(v << 2) & 0x3F];\n"
+        "        out[j++] = '=';\n"
+        "    }\n"
+        "    out[j] = '\\0';\n"
+        "}\n\n");
+    sb_append(out,
+        "int http_server_start(int port) {\n"
+        "    net_init();\n"
+        "    int srv = (int)socket(AF_INET, SOCK_STREAM, 0);\n"
+        "    if (srv < 0) return -1;\n"
+        "    struct sockaddr_in addr;\n"
+        "    memset(&addr, 0, sizeof(addr));\n"
+        "    addr.sin_family = AF_INET;\n"
+        "    addr.sin_addr.s_addr = 0;\n"
+        "    addr.sin_port = htons((unsigned short)port);\n"
+        "    int yes = 1;\n"
+        "    setsockopt(srv, SOL_SOCKET, SO_REUSEADDR, (char*)&yes, sizeof(yes));\n"
+        "    if (bind(srv, (struct sockaddr*)&addr, sizeof(addr)) != 0) {\n"
+        "        net_close_socket(srv);\n"
+        "        return -1;\n"
+        "    }\n"
+        "    if (listen(srv, 10) != 0) {\n"
+        "        net_close_socket(srv);\n"
+        "        return -1;\n"
+        "    }\n"
+        "    return srv;\n"
+        "}\n"
+        "int http_accept(int server_socket) {\n"
+        "    if (server_socket < 0) return -1;\n"
+        "    return (int)accept(server_socket, NULL, NULL);\n"
+        "}\n"
+        "string http_read_request(int client_socket) {\n"
+        "    if (client_socket < 0) return string_dup(\"\");\n"
+        "    char* buf = malloc(4096);\n"
+        "    int n = recv(client_socket, buf, 4095, 0);\n"
+        "    if (n <= 0) {\n"
+        "        free(buf);\n"
+        "        return string_dup(\"\");\n"
+        "    }\n"
+        "    buf[n] = '\\0';\n"
+        "    return buf;\n"
+        "}\n"
+        "void http_send_response(int client_socket, string content_type, string response_body) {\n"
+        "    if (client_socket < 0) return;\n"
+        "    const char* ct = content_type ? content_type : \"text/html; charset=utf-8\";\n"
+        "    const char* body = response_body ? response_body : \"\";\n"
+        "    char header[512];\n"
+        "    snprintf(header, sizeof(header),\n"
+        "             \"HTTP/1.1 200 OK\\r\\nContent-Type: %s\\r\\nContent-Length: %lu\\r\\nConnection: close\\r\\n\\r\\n\",\n"
+        "             ct, (unsigned long)strlen(body));\n"
+        "    send(client_socket, header, (int)strlen(header), 0);\n"
+        "    send(client_socket, body, (int)strlen(body), 0);\n"
+        "}\n"
+        "void http_close(int client_socket) {\n"
+        "    if (client_socket >= 0) net_close_socket(client_socket);\n"
+        "}\n\n");
+    sb_append(out,
+        "int websocket_server_start(int port) {\n"
+        "    return http_server_start(port);\n"
+        "}\n"
+        "int websocket_accept(int server_socket) {\n"
+        "    int c = http_accept(server_socket);\n"
+        "    if (c < 0) return -1;\n"
+        "    char req[4096];\n"
+        "    int n = recv(c, req, sizeof(req) - 1, 0);\n"
+        "    if (n <= 0) {\n"
+        "        net_close_socket(c);\n"
+        "        return -1;\n"
+        "    }\n"
+        "    req[n] = '\\0';\n"
+        "    char* key_header = strstr(req, \"Sec-WebSocket-Key:\");\n"
+        "    if (!key_header) {\n"
+        "        net_close_socket(c);\n"
+        "        return -1;\n"
+        "    }\n"
+        "    key_header += strlen(\"Sec-WebSocket-Key:\");\n"
+        "    while (*key_header == ' ' || *key_header == '\\t') key_header++;\n"
+        "    char* key_end = strstr(key_header, \"\\r\\n\");\n"
+        "    if (!key_end) {\n"
+        "        net_close_socket(c);\n"
+        "        return -1;\n"
+        "    }\n"
+        "    char key[128] = {0};\n"
+        "    snprintf(key, sizeof(key), \"%.*s\", (int)(key_end - key_header), key_header);\n"
+        "    char concat[256];\n"
+        "    snprintf(concat, sizeof(concat), \"%s258EAFA5-E914-47DA-95CA-C5AB0DC85B11\", key);\n"
+        "    unsigned char hash[20];\n"
+        "    mlg_sha1((unsigned char*)concat, strlen(concat), hash);\n"
+        "    char accept_key[64];\n"
+        "    mlg_base64_encode(hash, 20, accept_key);\n"
+        "    char response[512];\n"
+        "    snprintf(response, sizeof(response),\n"
+        "             \"HTTP/1.1 101 Switching Protocols\\r\\n\"\n"
+        "             \"Upgrade: websocket\\r\\n\"\n"
+        "             \"Connection: Upgrade\\r\\n\"\n"
+        "             \"Sec-WebSocket-Accept: %s\\r\\n\\r\\n\", accept_key);\n"
+        "    send(c, response, (int)strlen(response), 0);\n"
+        "    return c;\n"
+        "}\n");
 }
 
 char* codegen_program(AstNode* program, SymbolTable* symbols) {
@@ -668,6 +1006,7 @@ char* codegen_program(AstNode* program, SymbolTable* symbols) {
     cg.symbols = symbols;
     cg.indent = 0;
     cg.in_function = 0;
+
     emit_runtime(&cg.out);
 
     for (int i = 0; i < program->program.statements.count; i++) {

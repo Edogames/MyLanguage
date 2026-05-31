@@ -5,9 +5,9 @@
 #include "src/frontend/parser.c"
 #include "src/middle/symbols.c"
 #include "src/backend/codegen.c"
+#include "src/vm/vm.c"
 #include "src/compiler.c"
 
 int main(int argc, char** argv) {
     return mylang_main(argc, argv);
 }
-

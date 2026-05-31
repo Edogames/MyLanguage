@@ -34,7 +34,7 @@ struct AstNode {
     union {
         struct { NodeArray statements; } program;
         struct { char* module; char** items; int item_count; int wildcard; } import_stmt;
-        struct { char* return_type; char* name; Param* params; int param_count; AstNode* body; } func;
+        struct { char* return_type; char* name; Param* params; int param_count; int is_async; AstNode* body; } func;
         struct { NodeArray statements; } block;
         struct { char* type; char* name; char* expr; } var;
         struct { char* expr; } ret;
@@ -51,4 +51,3 @@ AstNode* ast_new(NodeKind kind, int line);
 void ast_free(AstNode* node);
 
 #endif
-

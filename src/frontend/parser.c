@@ -21,7 +21,8 @@ static int is_type_token(Token* t) {
     return strcmp(t->text, "void") == 0 || strcmp(t->text, "int") == 0 ||
            strcmp(t->text, "string") == 0 || strcmp(t->text, "float") == 0 ||
            strcmp(t->text, "double") == 0 || strcmp(t->text, "bool") == 0 ||
-           strcmp(t->text, "json") == 0 || strcmp(t->text, "file") == 0;
+           strcmp(t->text, "json") == 0 || strcmp(t->text, "file") == 0 ||
+           strcmp(t->text, "task") == 0;
 }
 
 static int token_needs_space(const char* a, const char* b) {
@@ -124,8 +125,9 @@ static AstNode* parse_import(Parser* p) {
     return n;
 }
 
-static AstNode* parse_function(Parser* p) {
+static AstNode* parse_function(Parser* p, int is_async) {
     AstNode* n = ast_new(NODE_FUNC, peek(p)->line);
+    n->func.is_async = is_async;
     n->func.return_type = mlg_strdup(peek(p)->text);
     p->pos++;
     n->func.name = mlg_strdup(peek(p)->text);
@@ -159,6 +161,17 @@ static AstNode* parse_var(Parser* p) {
 }
 
 static AstNode* parse_statement(Parser* p) {
+    if (is_text(p, "async")) {
+        p->pos++;
+        if (!is_type_token(peek(p))) {
+            p->pos--; // backtrack "async"
+            AstNode* n = ast_new(NODE_EXPR, peek(p)->line);
+            n->expr_stmt.expr = capture_until(p, ";");
+            if (!match(p, ";")) parser_error(p, "expected ';'");
+            return n;
+        }
+        return parse_function(p, 1);
+    }
     if (is_text(p, "from")) return parse_import(p);
     if (is_text(p, "{")) return parse_block(p);
     if (is_text(p, "if")) {
@@ -198,10 +211,10 @@ static AstNode* parse_statement(Parser* p) {
         Token* t2 = &p->tokens->items[p->pos + 2];
         
         if (t0->kind == TOK_IDENT) {
-            if (strcmp(t2->text, "(") == 0) return parse_function(p);
+            if (strcmp(t2->text, "(") == 0) return parse_function(p, 0);
             return parse_var(p);
         }
-        if (strcmp(t2->text, "(") == 0) return parse_function(p);
+        if (strcmp(t2->text, "(") == 0) return parse_function(p, 0);
         (void)t0;
         return parse_var(p);
     }
