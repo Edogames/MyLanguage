@@ -41,7 +41,7 @@ mylang --run <executable_name>.mlgb
 
 To compile the code for native usage, run this command;
 ```bash
-mylang main.mlg --backend c --target [your target platform alias]
+mylang main.mlg --backend c --target [your target platform alias] [app name(optional)]
 ```
 
 right now this language supports macos, windows, linux, android and ios (still needs some testing)
