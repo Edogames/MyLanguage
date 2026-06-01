@@ -19,19 +19,38 @@ gcc ./mylang.c -o mylang.exe -std=c11 -Wall -Wextra
 Mylang applications are compiled into standard executables using the `mylang` compiler.
 
 **Basic Usage:**
-To compile a single file, run:
+To compile your code into a portable `.mlgb` file, run:
 ```bash
 mylang <main_file.mlg> [output_name(optional)]
 ```
 *Example:*
 ```bash
 mylang main.mlg my_app
-# This will generate an executable named 'my_app'
+# This will generate an executable named 'my_app.mlgb'
 ```
 ```bash
 mylang main.mlg
-# This will generate an executable named 'app'
+# This will generate an executable named 'app.mlgb'
 ```
+
+To run it, write down in command-line the following;
+```bash
+mylang --run <executable_name>.mlgb
+# this launches the VM and runs your code anywhere
+```
+
+To compile the code for native usage, run this command;
+```bash
+mylang main.mlg --backend c --target [your target platform alias]
+```
+
+right now this language supports macos, windows, linux, android and ios (still needs some testing)
+
+1. `win` - windows, on non-Windows requires x86_64-w64-mingw32-gcc in PATH
+2. `lin` - linux, cross-compilation from non-Linux isn't really supported yet
+3. `mac` - macos, not tested, requires clang + macOS SDK (must be on macOS)
+4. `ios` - ios, requires Xcode + xcrun on macOS
+5. `android` - android, requires Android NDK's clang with --target=aarch64-linux-android
 
 ### 2. Project Structure
 
