@@ -1,13 +1,31 @@
-#include "src/common/util.c"
-#include "src/frontend/token.c"
-#include "src/frontend/lexer.c"
-#include "src/frontend/ast.c"
-#include "src/frontend/parser.c"
-#include "src/middle/symbols.c"
-#include "src/backend/codegen.c"
-#include "src/vm/vm.c"
-#include "src/compiler.c"
+#ifndef MYLANG_TOKEN_H
+#define MYLANG_TOKEN_H
 
-int main(int argc, char** argv) {
-    return mylang_main(argc, argv);
-}
+typedef enum {
+    TOK_EOF,
+    TOK_IDENT,
+    TOK_NUMBER,
+    TOK_STRING,
+    TOK_INTERP_STRING,
+    TOK_SYMBOL
+} TokenKind;
+
+typedef struct {
+    TokenKind kind;
+    char* text;
+    int line;
+    int col;
+} Token;
+
+typedef struct {
+    Token* items;
+    int count;
+    int cap;
+} TokenArray;
+
+void tokens_init(TokenArray* arr);
+void tokens_push(TokenArray* arr, Token token);
+void tokens_free(TokenArray* arr);
+
+#endif
+
